@@ -1,5 +1,6 @@
 # DNTN
-A distributed neural tensor network on top of KeystoneML.
+
+A distributed neural tensor network on top of KeystoneML. Based on [Reasoning With Neural Tensor Networks For Knowledge Base Completion](http://www.socher.org/index.php/Main/ReasoningWithNeuralTensorNetworksForKnowledgeBaseCompletion) by Socher, Chen, Manning and Ng.
 
 ## To Run This Example:
 Launch a KeystoneML cluster using the provided scripts according to [these instructions](http://keystone-ml.org/running_pipelines.html).
