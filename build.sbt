@@ -1,3 +1,6 @@
+import AssemblyKeys._
+
+assemblySettings
 
 name := "DNTN"
 
@@ -25,7 +28,8 @@ libraryDependencies ++= Seq(
     "org.apache.spark" % "spark-core_2.10" % sparkVersion excludeAll(excludeHadoop),
     "org.apache.spark" % "spark-mllib_2.10" % sparkVersion excludeAll(excludeHadoop),
     "org.apache.spark" % "spark-sql_2.10" % sparkVersion excludeAll(excludeHadoop),
-    "edu.berkeley.cs.amplab" % "keystoneml_2.10" % "0.3.0-SNAPSHOT" excludeAll(excludeHadoop, excludeSpark)
+    //"edu.berkeley.cs.amplab" % "keystoneml_2.10" % "0.3.0-SNAPSHOT" excludeAll(excludeHadoop, excludeSpark)
+    "edu.berkeley.cs.amplab" % "keystoneml_2.10" % "0.3.0" excludeAll(excludeHadoop, excludeSpark)
   )
 }
 

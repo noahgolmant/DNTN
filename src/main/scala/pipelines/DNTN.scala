@@ -10,10 +10,15 @@ import breeze.numerics.{sigmoid, tanh}
 import org.apache.spark.rdd.RDD
 import pipelines.DNTN.DataConfig
 
-class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) {
+class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends Serializable {
 
   /** 3rd order tensor representation for weight matrix slices */
   type Tensor = Seq[DenseMatrix[Double]]
+
+  /** representation of model to train per relation type - word embedding matrix is global */
+  case class RelationModel(W: Tensor, V: DenseMatrix[Double], b: DenseVector[Double], U: DenseVector[Double])
+
+  case class RelationModelDecodeInfo(WShape: (Int, Int, Int), VShape: (Int, Int), bShape: Int, UShape: Int)
 
   val data = sc.parallelize(dataLoader.data)
 
@@ -24,53 +29,67 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) {
   final val numRelations = dataLoader.relationsDict.size
 
   /* Randomly initialize the word embedding vectors */
-  val embeddingMatrix: DenseMatrix[Double] = {
-    val randomDistribution = Uniform(-RANDOM_EMBEDDING_INIT_RANGE, RANDOM_EMBEDDING_INIT_RANGE)
-    DenseMatrix.rand(numWords, conf.embeddingSize, randomDistribution)
+  var embeddingMatrix: DenseMatrix[Double] = {
+    val randomEmbedDistribution = Uniform(-RANDOM_EMBEDDING_INIT_RANGE, RANDOM_EMBEDDING_INIT_RANGE)
+    DenseMatrix.rand(numWords, conf.embeddingSize, randomEmbedDistribution)
   }
 
-  /*
-   Collection of weight tensor slices that form the tensor
-   (W in the paper)
-  */
-  val W: RDD[Tensor] = {
-    val randomDistribution = Uniform(-RANDOM_TENSOR_INIT_RANGE, RANDOM_TENSOR_INIT_RANGE)
-    sc.parallelize((0 to numRelations).map(relationIndex => {
-      (0 to conf.sliceSize).map(sliceIndex => {
-        DenseMatrix.rand(conf.embeddingSize, conf.embeddingSize, randomDistribution)
-      })
-    }))
+  val initModels: RDD[RelationModel] = sc.parallelize((1 to numRelations).map(relationIndex => {
+    val randomTensorDistribution = Uniform(-RANDOM_TENSOR_INIT_RANGE, RANDOM_TENSOR_INIT_RANGE)
+
+    // weight tensor
+    val W = (1 to conf.sliceSize).map(sliceIndex => {
+      DenseMatrix.rand(conf.embeddingSize, conf.embeddingSize, randomTensorDistribution)
+    })
+    // standard feedforward layer weights applied to concatenated entity vectors
+    val V = DenseMatrix.zeros[Double](conf.sliceSize, 2 * conf.embeddingSize)
+    // bias vector
+    val b = DenseVector.zeros[Double](conf.sliceSize)
+    // scoring vector dotted with output of activation function
+    val U = DenseVector.ones[Double](conf.sliceSize)
+    RelationModel(W, V, b, U)
+  }), numSlices = numRelations)
+
+  /**
+    * Roll all model parameters to be trained into a flattened param vector, theta
+    */
+  def rollToTheta(model: RelationModel) : (DenseVector[Double], RelationModelDecodeInfo) = {
+    // flatten the tensor: horizontally concat all tensor slices, then flatten them all into one vector
+    val rolledW: DenseVector[Double] = model.W.reduceLeft[DenseMatrix[Double]] {
+      case (left: DenseMatrix[Double], right: DenseMatrix[Double]) => DenseMatrix.horzcat(left, right)
+    }.toDenseVector
+    val rolledV = model.V.toDenseVector
+
+    // supply parameter dimensions for reconstructing the model from theta
+    val decodeInfo = RelationModelDecodeInfo((model.W.length, model.W(0).rows, model.W(0).cols),
+      (model.V.rows, model.V.cols), model.b.length, model.U.length)
+    (DenseVector.vertcat(rolledW, rolledV, model.b, model.U), decodeInfo)
   }
 
-  /*
-    Standard neural net weight matrices applied to concatenated entity vectors (2 * embeddingSize by numRelations)
-    (V in the paper)
-   */
-  val V: RDD[DenseMatrix[Double]] = {
-    sc.parallelize((0 to numRelations).map(relationIndex => {
-      DenseMatrix.zeros[Double](conf.sliceSize, 2 * conf.embeddingSize)
-    }))
-  }
+  /**
+    * Unroll theta into the model for cost calculations
+    */
+  private def unrollFromTheta(theta: DenseVector[Double], decodeInfo: RelationModelDecodeInfo) : RelationModel = {
+    // get ranges [x, y) to initially partition the rolled parameter vector
+    val WRange = 0 until decodeInfo.WShape._1 * decodeInfo.WShape._2 * decodeInfo.WShape._3
+    val VRange = WRange.end until decodeInfo.VShape._1 * decodeInfo.VShape._2
+    val bRange = VRange.end until decodeInfo.bShape
+    val URange = bRange.end until decodeInfo.UShape
 
-  /* bias vector */
-  val b: RDD[DenseVector[Double]] = {
-    sc.parallelize((0 to numRelations).map(_ => {
-      DenseVector.zeros[Double](conf.sliceSize)
-    }))
-  }
+    // construct tensor: create matrix where each row represents a tensor slice, then transform
+    // each slice into the matrix
+    val WMat: DenseMatrix[Double] = new DenseMatrix[Double](decodeInfo.WShape._1, decodeInfo.WShape._2 * decodeInfo.WShape._3, theta(WRange).toArray)
+    val W: Seq[DenseMatrix[Double]] = (0 until WMat.rows).map(i => {
+      val row = WMat(i, ::).t
+      new DenseMatrix[Double](decodeInfo.WShape._2, decodeInfo.WShape._3, row.toArray)
+    })
 
-  /* scoring vector U that is dotted with the output of the activation function */
-  val U: RDD[DenseVector[Double]] = {
-    sc.parallelize((0 to numRelations).map(_ => {
-      DenseVector.ones[Double](conf.sliceSize)
-    }))
-  }
+    // construct other parameters and the final model
+    val V = new DenseMatrix[Double](decodeInfo.VShape._1, decodeInfo.VShape._2, theta(VRange).toArray)
+    val b = theta(bRange)
+    val U = theta(URange)
 
-  /* The unrolled parameter vector to be optimized by gradient descent
-     (unrolled version of previous model parameter tensors)
-   */
-  val theta: DenseVector[Double] = {
-    DenseVector.zeros[Double](1000)
+    RelationModel(W, V, b, U)
   }
 
   /**
@@ -104,9 +123,11 @@ object DNTN extends Logging {
     val trainingDataLoader = new DataLoader(conf.entitiesLocation, conf.relationsLocation, conf.trainLocation)
     val dntn = new DNTN(sc, trainingDataLoader, conf)
 
-
-    logInfo("Matrix!")
-    logInfo(dntn.embeddingMatrix(::, 0 to 5).toString)
+    logInfo("Theta sample!")
+    val model = dntn.initModels.first()
+    val (theta, _) = dntn.rollToTheta(model)
+    logInfo("Length: " + theta.length)
+    logInfo(theta.toString)
   }
 
   case class DataConfig(
