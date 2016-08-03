@@ -17,7 +17,7 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) {
 
   val data = sc.parallelize(dataLoader.data)
 
-  final val RANDOM_INIT_RANGE = 1e-4
+  final val RANDOM_EMBEDDING_INIT_RANGE = 1e-4
   final val RANDOM_TENSOR_INIT_RANGE = 1.0 / math.sqrt(2 * conf.embeddingSize)
   final val numWords = dataLoader.wordIndices.size
   final val numEntities = dataLoader.entityDict.size
@@ -25,7 +25,7 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) {
 
   /* Randomly initialize the word embedding vectors */
   val embeddingMatrix: DenseMatrix[Double] = {
-    val randomDistribution = Uniform(-RANDOM_INIT_RANGE, RANDOM_INIT_RANGE)
+    val randomDistribution = Uniform(-RANDOM_EMBEDDING_INIT_RANGE, RANDOM_EMBEDDING_INIT_RANGE)
     DenseMatrix.rand(numWords, conf.embeddingSize, randomDistribution)
   }
 
@@ -54,16 +54,23 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) {
 
   /* bias vector */
   val b: RDD[DenseVector[Double]] = {
-    sc.parallelize(0 to numRelations).map(_ => {
+    sc.parallelize((0 to numRelations).map(_ => {
       DenseVector.zeros[Double](conf.sliceSize)
-    })
+    }))
   }
 
   /* scoring vector U that is dotted with the output of the activation function */
   val U: RDD[DenseVector[Double]] = {
-    sc.parallelize(0 to numRelations).map(_ => {
+    sc.parallelize((0 to numRelations).map(_ => {
       DenseVector.ones[Double](conf.sliceSize)
-    })
+    }))
+  }
+
+  /* The unrolled parameter vector to be optimized by gradient descent
+     (unrolled version of previous model parameter tensors)
+   */
+  val theta: DenseVector[Double] = {
+    DenseVector.zeros[Double](1000)
   }
 
   /**
@@ -99,7 +106,7 @@ object DNTN extends Logging {
 
 
     logInfo("Matrix!")
-    logInfo(dntn.embeddingMatrix(::, 0).toString)
+    logInfo(dntn.embeddingMatrix(::, 0 to 5).toString)
   }
 
   case class DataConfig(
