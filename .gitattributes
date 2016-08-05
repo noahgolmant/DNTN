@@ -1,0 +1,14 @@
+data/Freebase filter=lfs diff=lfs merge=lfs -text
+data/Wordnet filter=lfs diff=lfs merge=lfs -text
+data/Wordnet/dev.txt filter=lfs diff=lfs merge=lfs -text
+data/Wordnet/entities.txt filter=lfs diff=lfs merge=lfs -text
+data/Wordnet/initEmbed.mat filter=lfs diff=lfs merge=lfs -text
+data/Wordnet/relations.txt filter=lfs diff=lfs merge=lfs -text
+data/Wordnet/test.txt filter=lfs diff=lfs merge=lfs -text
+data/Wordnet/train.txt filter=lfs diff=lfs merge=lfs -text
+data/Freebase/dev.txt filter=lfs diff=lfs merge=lfs -text
+data/Freebase/entities.txt filter=lfs diff=lfs merge=lfs -text
+data/Freebase/initEmbed.mat filter=lfs diff=lfs merge=lfs -text
+data/Freebase/relations.txt filter=lfs diff=lfs merge=lfs -text
+data/Freebase/test.txt filter=lfs diff=lfs merge=lfs -text
+data/Freebase/train.txt filter=lfs diff=lfs merge=lfs -text
