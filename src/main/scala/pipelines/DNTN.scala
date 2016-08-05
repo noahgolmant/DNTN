@@ -5,7 +5,7 @@ import org.apache.spark.{SparkConf, SparkContext}
 import scopt.OptionParser
 import activation.ActivationEnum._
 import breeze.linalg.{DenseMatrix, DenseVector}
-import breeze.stats.distributions.{Gaussian, Uniform}
+import breeze.stats.distributions.Uniform
 import breeze.numerics.{sigmoid, tanh}
 import org.apache.spark.rdd.RDD
 import pipelines.DNTN.DataConfig
@@ -55,13 +55,11 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends S
     */
   def rollToTheta(model: RelationModel) : (DenseVector[Double], RelationModelDecodeInfo) = {
     // flatten the tensor: horizontally concat all tensor slices, then flatten them all into one vector
-    val rolledW: DenseVector[Double] = model.W.reduceLeft[DenseMatrix[Double]] {
-      case (left: DenseMatrix[Double], right: DenseMatrix[Double]) => DenseMatrix.horzcat(left, right)
-    }.toDenseVector
+    val rolledW: DenseVector[Double] = model.W.map(_.toDenseVector).reduceLeft(DenseVector.vertcat(_, _))
     val rolledV = model.V.toDenseVector
 
     // supply parameter dimensions for reconstructing the model from theta
-    val decodeInfo = RelationModelDecodeInfo((model.W.length, model.W(0).rows, model.W(0).cols),
+    val decodeInfo = RelationModelDecodeInfo((model.W.length, model.W.head.rows, model.W.head.cols),
       (model.V.rows, model.V.cols), model.b.length, model.U.length)
     (DenseVector.vertcat(rolledW, rolledV, model.b, model.U), decodeInfo)
   }
@@ -69,19 +67,19 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends S
   /**
     * Unroll theta into the model for cost calculations
     */
-  private def unrollFromTheta(theta: DenseVector[Double], decodeInfo: RelationModelDecodeInfo) : RelationModel = {
+  def unrollFromTheta(theta: DenseVector[Double], decodeInfo: RelationModelDecodeInfo) : RelationModel = {
     // get ranges [x, y) to initially partition the rolled parameter vector
-    val WRange = 0 until decodeInfo.WShape._1 * decodeInfo.WShape._2 * decodeInfo.WShape._3
-    val VRange = WRange.end until decodeInfo.VShape._1 * decodeInfo.VShape._2
-    val bRange = VRange.end until decodeInfo.bShape
-    val URange = bRange.end until decodeInfo.UShape
+    val WRange = 0 until (decodeInfo.WShape._1 * decodeInfo.WShape._2 * decodeInfo.WShape._3)
+    val VRange = WRange.end until (WRange.end + decodeInfo.VShape._1 * decodeInfo.VShape._2)
+    val bRange = VRange.end until (VRange.end + decodeInfo.bShape)
+    val URange = bRange.end until (bRange.end + decodeInfo.UShape)
 
     // construct tensor: create matrix where each row represents a tensor slice, then transform
     // each slice into the matrix
-    val WMat: DenseMatrix[Double] = new DenseMatrix[Double](decodeInfo.WShape._1, decodeInfo.WShape._2 * decodeInfo.WShape._3, theta(WRange).toArray)
-    val W: Seq[DenseMatrix[Double]] = (0 until WMat.rows).map(i => {
-      val row = WMat(i, ::).t
-      new DenseMatrix[Double](decodeInfo.WShape._2, decodeInfo.WShape._3, row.toArray)
+    val WMat: DenseMatrix[Double] = new DenseMatrix[Double](decodeInfo.WShape._2 * decodeInfo.WShape._3, decodeInfo.WShape._1, theta(WRange).toArray)
+    val W: Seq[DenseMatrix[Double]] = (0 until WMat.cols).map(i => {
+      val col = WMat(::, i)
+      new DenseMatrix[Double](decodeInfo.WShape._2, decodeInfo.WShape._3, col.toArray)
     })
 
     // construct other parameters and the final model
