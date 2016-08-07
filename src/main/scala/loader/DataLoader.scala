@@ -1,7 +1,10 @@
 package loader
 
-import scala.collection.mutable
+import com.jmatio.io.MatFileReader
+import com.jmatio.types.{MLArray, MLCell, MLDouble, MLStructure}
+
 import scala.io.Source
+import scala.collection.JavaConversions._
 
 case class Relation(leftEntity: Int, relation: Int, rightEntity: Int)
 
@@ -10,7 +13,8 @@ case class Relation(leftEntity: Int, relation: Int, rightEntity: Int)
   */
 class DataLoader(entityFile: String,
                  relationsFile: String,
-                 dataFile: String) {
+                 dataFile: String,
+                 initEmbedsMatFile: String) {
 
   private def loadDictionary(filename: String): Map[String, Int] = {
     val fileLines = Source.fromFile(filename).getLines()
@@ -37,5 +41,17 @@ class DataLoader(entityFile: String,
   }
 
   /* Map to get an entity by its index */
-  val wordIndices: Map[Int, String] = entityDict.map(f => (f._2, f._1))
+  //val wordIndices: Map[Int, String] = entityDict.map(f => (f._2, f._1))
+  val entityToWordIndices: Map[Int, Seq[Int]] = {
+    val file = new MatFileReader(initEmbedsMatFile)
+    val content = file.getContent
+    val tree = content.get("tree").asInstanceOf[MLCell]
+    tree.cells().zipWithIndex.map{
+      case (mlarr: MLArray, index: Int) => {
+        val mlstruct = mlarr.asInstanceOf[MLStructure]
+        val wordData = mlstruct.getField("ids").asInstanceOf[MLDouble].getArray()(0).map(_.toInt)
+        index -> wordData.toSeq
+      }
+    }.toMap
+  }
 }
