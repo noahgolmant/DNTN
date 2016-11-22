@@ -137,12 +137,23 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends S
     DataBatch(batchData, corruptEntities)
   }
 
+  private def reduceMatrix(matrix: DenseMatrix[Double], alongRows: Boolean = true) : DenseVector[Double] = {
+    if (alongRows) {
+      val columns = (0 until matrix.cols).map(i => {
+        matrix(::, i)
+      })
+      columns.foldLeft(DenseVector.zeros[Double](matrix.rows))(_ + _)
+    } else {
+      val rows = (0 until matrix.rows).map(i => {
+        matrix(i, ::).t
+      })
+      rows.foldLeft(DenseVector.zeros[Double](matrix.cols))(_ + _)
+    }
+  }
+
   private def tensorProduct(left: DenseMatrix[Double], middle: DenseMatrix[Double], right: DenseMatrix[Double]) : DenseVector[Double] = {
-    val prod: DenseMatrix[Double] = left * (middle dot right)
-    val columns = (0 until prod.cols).map(i => {
-      prod(::, i)
-    })
-    columns.foldLeft(DenseVector.zeros[Double](prod.rows))(_ + _)
+    val prod: DenseMatrix[Double] = left * (middle * right)
+    reduceMatrix(prod)
   }
 
   /**
@@ -152,7 +163,7 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends S
     val models = unrollFromTheta(theta, decoders)
 
     //val entityVectors = DenseMatrix.zeros[Double](conf.embeddingSize, numEntities)
-    val entityGrad = DenseMatrix.zeros[Double](conf.embeddingSize, numEntities)
+    var entityGrad = DenseMatrix.zeros[Double](conf.embeddingSize, numEntities)
     val entityData = (0 until numEntities).map(i => {
       val wordIndices = dataLoader.entityToWordIndices.get(i)
       assert(wordIndices.isDefined, "expected word indices sequences for entity index")
@@ -180,8 +191,8 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends S
       // get entity embedding vectors for negative sampling
       var leftEntityMatrixNeg = leftEntityMatrix
       var rightEntityMatrixNeg = corruptEntityMatrix
-      var leftEntitiesNeg = leftEntitiesNeg
-      var rightEntitiesNeg = dataBatch.corruptEntities
+      var leftEntitiesNeg: Seq[Int] = leftEntities
+      var rightEntitiesNeg: Seq[Int] = dataBatch.corruptEntities
 
       // randomly swap where corrupt entities placed (left or right)
       if (!flip) {
@@ -205,29 +216,46 @@ class DNTN(sc: SparkContext, dataLoader: DataLoader, conf: DataConfig) extends S
       }
 
       // add standard feedforward model + bias to activation
-      preactivationPos += model.b.t + (model.V.t dot DenseMatrix.horzcat(leftEntityMatrix, rightEntityMatrix))
-      preactivationNeg += model.b.t + (model.V.t dot DenseMatrix.horzcat(leftEntityMatrixNeg, rightEntityMatrixNeg))
+      preactivationPos += model.b.t + (model.V.t * DenseMatrix.horzcat(leftEntityMatrix, rightEntityMatrix))
+      preactivationNeg += model.b.t + (model.V.t * DenseMatrix.horzcat(leftEntityMatrixNeg, rightEntityMatrixNeg))
+
 
       // apply the activation function to all preactivation vectors
-      val activationPos = activation(preactivationPos.t, conf.activationFunction)
-      val activationNeg = activation(preactivationNeg.t, conf.activationFunction)
+      var activationPos = activation(preactivationPos.t, conf.activationFunction)
+      var activationNeg = activation(preactivationNeg.t, conf.activationFunction)
 
       // get scores where each entry is the score g(model) for a particular slice of the tensor W
       val scorePos: DenseVector[Double] = model.U.t dot activationPos
       val scoreNeg: DenseVector[Double] = model.U.t dot activationNeg
 
       // sum the costs of the entries where the positive score + 1 is greater than the negative score
-      val filter = (scorePos :+ 1.0 :> scoreNeg).map(if (_) 1.0 else 0.0)
-      cost += filter * (scorePos - scoreNeg :+ 1.0)
+      val wrongFilter = (scorePos :+ 1.0 :> scoreNeg).map(if (_) 1.0 else 0.0)
+      cost += wrongFilter * (scorePos - scoreNeg :+ 1.0)
 
       // initialize gradients for the W tensor and V feedforward layer weights
       var WGrad = model.W.indices.map (i => DenseMatrix.zeros[Double](model.W.head.rows, model.W.head.cols))
       var VGrad = DenseMatrix.zeros[Double](model.V.rows, model.V.cols)
 
       // use total number of activations wrong to calculate gradient of model params
-      val numWrong = filter.reduceLeft(_ + _)
+      val numWrong = wrongFilter.reduceLeft(_ + _)
 
-      
+      // filter the matrices for the incorrect vectors
+      activationPos = activationPos(::, wrongFilter)
+      activationNeg = activationNeg(::, wrongFilter)
+      val leftEntityVectorsRel = leftEntityMatrix(::, wrongFilter)
+      val rightEntityVectorsRel = rightEntityMatrix(::, wrongFilter)
+      val leftEntityVectorsRelNeg = leftEntityMatrixNeg(::, wrongFilter)
+      val rightEntityVectorsRelNeg = rightEntityMatrixNeg(::, wrongFilter)
+
+      // filter incorrect entities
+      val wrongFilterArr = wrongFilter.toArray.map(_ > 0.5)
+      val wrongLeftEntities = leftEntities.zip(wrongFilterArr).filter(_._2)
+      val wrongRightEntities = rightEntities.zip(wrongFilterArr).filter(_._2)
+      val wrongLeftEntitiesNeg = leftEntitiesNeg.zip(wrongFilterArr).filter(_._2)
+      val wrongRightEntitiesNeg = rightEntitiesNeg.zip(wrongFilterArr).filter(_._2)
+
+      // calculate U gradient for this relation
+      val UGrad = reduceMatrix(activationPos - activationNeg)
 
     }
 
